@@ -197,6 +197,12 @@
 #endif
 
 //////////////////////////////////////////////////////////////////////////////
+// HANDING - fly vehicle in handing mode (просто висение для привязного коптера)
+#ifndef MODE_HANDING_ENABLED
+# define MODE_HANDING_ENABLED 1
+#endif
+
+//////////////////////////////////////////////////////////////////////////////
 // RTL - Return To Launch
 #ifndef MODE_RTL_ENABLED
 # define MODE_RTL_ENABLED 1

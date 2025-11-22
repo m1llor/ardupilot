@@ -152,6 +152,10 @@ Mode *Copter::mode_from_mode_num(const Mode::Number mode)
             return &mode_turtle;
 #endif
 
+#if MODE_HANDING_ENABLED
+    case Mode::Number::HANDING:
+        return &mode_handing;
+#endif
         default:
             break;
     }
@@ -164,6 +168,9 @@ Mode *Copter::mode_from_mode_num(const Mode::Number mode)
         }
     }
 #endif
+
+
+
 
     return nullptr;
 }
@@ -208,7 +215,8 @@ bool Copter::gcs_mode_enabled(const Mode::Number mode_num)
         (uint8_t)Mode::Number::SYSTEMID,
         (uint8_t)Mode::Number::AUTOROTATE,
         (uint8_t)Mode::Number::AUTO_RTL,
-        (uint8_t)Mode::Number::TURTLE
+        (uint8_t)Mode::Number::TURTLE,
+        (uint8_t)Mode::Number::HANDING
     };
 
     if (!block_GCS_mode_change((uint8_t)mode_num, mode_list, ARRAY_SIZE(mode_list))) {
@@ -967,6 +975,58 @@ Mode::AltHoldModeState Mode::get_alt_hold_state_U_ms(float target_climb_rate_ms)
         // the aircraft is in a flying state
         motors->set_desired_spool_state(AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED);
         return AltHoldModeState::Flying;
+    }
+}
+
+Mode::HandingModeState Mode::get_handing_state_U_ms(float target_climb_rate_ms)
+{
+    // Alt Hold State Machine Determination
+    if (!motors->armed()) {
+        // the aircraft should moved to a shut down state
+        motors->set_desired_spool_state(AP_Motors::DesiredSpoolState::SHUT_DOWN);
+
+        // transition through states as aircraft spools down
+        switch (motors->get_spool_state()) {
+
+        case AP_Motors::SpoolState::SHUT_DOWN:
+            return HandingModeState::MotorStopped;
+
+        case AP_Motors::SpoolState::GROUND_IDLE:
+            return HandingModeState::Landed_Ground_Idle;
+
+        default:
+            return HandingModeState::Landed_Pre_Takeoff;
+        }
+
+    } else if (takeoff.running() || takeoff.triggered_ms(target_climb_rate_ms)) {
+        // the aircraft is currently landed or taking off, asking for a positive climb rate and in THROTTLE_UNLIMITED
+        // the aircraft should progress through the take off procedure
+        return HandingModeState::Takeoff;
+
+    } else if (!copter.ap.auto_armed || copter.ap.land_complete) {
+        // the aircraft is armed and landed
+        if (target_climb_rate_ms < 0.0f && !copter.ap.using_interlock) {
+            // the aircraft should move to a ground idle state
+            motors->set_desired_spool_state(AP_Motors::DesiredSpoolState::GROUND_IDLE);
+
+        } else {
+            // the aircraft should prepare for imminent take off
+            motors->set_desired_spool_state(AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED);
+        }
+
+        if (motors->get_spool_state() == AP_Motors::SpoolState::GROUND_IDLE) {
+            // the aircraft is waiting in ground idle
+            return HandingModeState::Landed_Ground_Idle;
+
+        } else {
+            // the aircraft can leave the ground at any time
+            return HandingModeState::Landed_Pre_Takeoff;
+        }
+
+    } else {
+        // the aircraft is in a flying state
+        motors->set_desired_spool_state(AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED);
+        return HandingModeState::Flying;
     }
 }
 
