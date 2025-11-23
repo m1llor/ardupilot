@@ -221,6 +221,15 @@ class VehicleInfo(object):
                     "models/Callisto.param",
                 ],
             },
+            "BMSTU-drone": {
+                "model": "X:@ROMFS/models/BMSTU-drone.json",
+                "waf_target": "bin/arducopter",
+                "default_params_filename": [
+                    "default_params/copter.parm",
+                    "default_params/copter-X.parm",
+                    "models/BMSTU-drone.param",
+                ],
+            },
             "quad-can": {
                 "waf_target": "bin/arducopter",
                 "default_params_filename": ["default_params/copter.parm", "default_params/quad-can.parm"],
