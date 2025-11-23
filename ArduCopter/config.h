@@ -495,10 +495,10 @@
 
 // default maximum vertical velocity and acceleration the pilot may request
 #ifndef PILOT_VELZ_MAX
- # define PILOT_VELZ_MAX    250     // maximum vertical velocity in cm/s
+ # define PILOT_VELZ_MAX    20000     // (was 250) // maximum vertical velocity in cm/s 
 #endif
 #ifndef PILOT_ACCEL_Z_DEFAULT
- # define PILOT_ACCEL_Z_DEFAULT 250 // vertical acceleration in cm/s/s while altitude is under pilot control
+ # define PILOT_ACCEL_Z_DEFAULT 20000 // (was 250) // vertical acceleration in cm/s/s while altitude is under pilot control
 #endif
 
 #ifndef PILOT_Y_RATE_DEFAULT
