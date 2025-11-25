@@ -7,8 +7,8 @@
 //  * Horizontal position (X/Y) is held using NE position controller; yaw is held.
 //  */
 
-// // maximum altitude above home allowed in HANDING mode (meters)
-// float HANDING_ALT_MAX_M = 150.0f;
+// // maximum allowed altitude above home in meters
+// static constexpr float HANDING_ALT_MAX_M = 150.0f;
 
 // bool ModeHanding::init(bool ignore_checks)
 // {
@@ -27,11 +27,6 @@
 
 //     // hold current altitude on entry
 //     pos_control->set_pos_target_U_from_climb_rate_m(0.0f);
-
-//     // constrain initial target altitude to the HANDING limit
-//     if (pos_control->get_pos_target_U_m() > HANDING_ALT_MAX_M) {
-//         pos_control->set_alt_target_with_slew_m(HANDING_ALT_MAX_M);
-//     }
 
 //     // set vertical speed and acceleration limits
 //     pos_control->set_max_speed_accel_U_m(-get_pilot_speed_dn_ms(),
@@ -54,20 +49,54 @@
 //                                          get_pilot_speed_up_ms(),
 //                                          get_pilot_accel_U_mss());
 
-//     // pilot desired climb rate (m/s)
-//     float target_climb_rate_ms = get_pilot_desired_climb_rate_ms();
+//     // либо удерживаем пилотскую команду, либо по RC3>=1500 ведём в потолок HANDING_ALT_MAX_M
+//     float target_climb_rate_ms = 0.0f;
+
+//     const bool takeoff_command = rc().has_valid_input() &&
+//                                  (copter.channel_throttle != nullptr) &&
+//                                  (copter.channel_throttle->get_radio_in() >= 1500);
+
+//     if (takeoff_command) {
+//         // формируем профиль скорости до заданной высоты
+//         const float current_alt_m = copter.current_loc.alt * 0.01f;
+//         const float remaining_to_ceiling_m = HANDING_ALT_MAX_M - current_alt_m;
+
+//         if (remaining_to_ceiling_m > 0.0f) {
+//             target_climb_rate_ms = sqrt_controller(remaining_to_ceiling_m,
+//                                                    pos_control->get_pos_U_p().kP(),
+//                                                    pos_control->get_max_accel_U_mss(),
+//                                                    G_Dt);
+//         }
+//     } else {
+//         // pilot desired climb rate (m/s)
+//         target_climb_rate_ms = get_pilot_desired_climb_rate_ms();
+//     }
+
 //     target_climb_rate_ms = constrain_float(target_climb_rate_ms,
 //                                            -get_pilot_speed_dn_ms(),
 //                                             get_pilot_speed_up_ms());
 
-//     // block further ascent once the altitude target reaches the HANDING limit
-//     if ((pos_control->get_pos_target_U_m() >= HANDING_ALT_MAX_M) && (target_climb_rate_ms > 0.0f)) {
-//         target_climb_rate_ms = 0.0f;
-//     }
-
-
 //     // determine state using shared altitude-hold logic
 //     HandingModeState handing_state = get_handing_state_U_ms(target_climb_rate_ms);
+
+//     // slow down as we approach the hard altitude ceiling to avoid overshoot
+//     if ((handing_state == HandingModeState::Takeoff || handing_state == HandingModeState::Flying) &&
+//         !is_negative(target_climb_rate_ms)) {
+//         const float current_alt_m = copter.current_loc.alt * 0.01f;
+//         const float target_alt_m = pos_control->get_pos_target_U_m();
+//         const float limited_current_target_m = MAX(current_alt_m, target_alt_m);
+//         const float remaining_to_max_m = HANDING_ALT_MAX_M - limited_current_target_m;
+
+//         if (remaining_to_max_m <= 0.0f) {
+//             target_climb_rate_ms = 0.0f;
+//         } else {
+//             const float slowdown_rate_ms = sqrt_controller(remaining_to_max_m,
+//                                                            pos_control->get_pos_U_p().kP(),
+//                                                            pos_control->get_max_accel_U_mss(),
+//                                                            G_Dt);
+//             target_climb_rate_ms = MIN(target_climb_rate_ms, slowdown_rate_ms);
+//         }
+//     }
 
 //     // roll/pitch targets будем брать из NE-контроллера, по умолчанию 0
 //     float roll_target_rad  = 0.0f;
@@ -111,17 +140,15 @@
 
 //         target_climb_rate_ms = get_avoidance_adjusted_climbrate_ms(target_climb_rate_ms);
 
+// #if AP_RANGEFINDER_ENABLED
+//         copter.surface_tracking.update_surface_offset();
+// #endif
 //         pos_control->set_pos_target_U_from_climb_rate_m(target_climb_rate_ms);
 
 //         // по X/Y — держим текущую цель, считаем компенсацию наклона
-//         // ensure altitude target never exceeds the HANDING maximum
-//         if (pos_control->get_pos_target_U_m() > HANDING_ALT_MAX_M) {
-//             pos_control->set_alt_target_with_slew_m(HANDING_ALT_MAX_M);
-//         }
 //         pos_control->update_NE_controller();
 //         roll_target_rad  = pos_control->get_roll_rad();
 //         pitch_target_rad = pos_control->get_pitch_rad();
-        
 //         break;
 //     }
 
@@ -138,6 +165,7 @@
 
 
 #include "Copter.h"
+#include <PID/PID.h>
 
 /*
  * ModeHanding: simple vertical takeoff/hold mode.
@@ -147,7 +175,9 @@
  */
 
 // maximum allowed altitude above home in meters
-static constexpr float HANDING_ALT_MAX_M = 150.0f;
+static float z_target_m = 150.0f;
+static PID z_rate_pid(0.5f, 0.025f, 0.0f, 1000);
+
 
 bool ModeHanding::init(bool ignore_checks)
 {
@@ -167,7 +197,10 @@ bool ModeHanding::init(bool ignore_checks)
     // hold current altitude on entry
     pos_control->set_pos_target_U_from_climb_rate_m(0.0f);
 
-    // set vertical speed and acceleration limits
+    // reset pid state
+    z_rate_pid.reset();
+
+    // // set vertical speed and acceleration limits
     pos_control->set_max_speed_accel_U_m(-get_pilot_speed_dn_ms(),
                                          get_pilot_speed_up_ms(),
                                          get_pilot_accel_U_mss());
@@ -183,37 +216,49 @@ bool ModeHanding::init(bool ignore_checks)
 
 void ModeHanding::run()
 {
+    const bool takeoff_command = rc().has_valid_input() &&
+                                (copter.channel_throttle != nullptr) &&
+                                (copter.channel_throttle->get_radio_in() >= 1500);
+
     // set vertical speed and acceleration limits
     pos_control->set_max_speed_accel_U_m(-get_pilot_speed_dn_ms(),
                                          get_pilot_speed_up_ms(),
                                          get_pilot_accel_U_mss());
 
-    // либо удерживаем пилотскую команду, либо по RC3>=1500 ведём в потолок HANDING_ALT_MAX_M
+    // либо удерживаем пилотскую команду, либо по RC3>=1500 ведём в потолок z
     float target_climb_rate_ms = 0.0f;
-
-    const bool takeoff_command = rc().has_valid_input() &&
-                                 (copter.channel_throttle != nullptr) &&
-                                 (copter.channel_throttle->get_radio_in() >= 1500);
+    float target_down_rate_ms = 0.0f;
 
     if (takeoff_command) {
         // формируем профиль скорости до заданной высоты
-        const float current_alt_m = copter.current_loc.alt * 0.01f;
-        const float remaining_to_ceiling_m = HANDING_ALT_MAX_M - current_alt_m;
+        const float z_current_m = copter.current_loc.alt * 0.01f;
+        const float z_error_m = z_target_m - z_current_m;
 
-        if (remaining_to_ceiling_m > 0.0f) {
-            target_climb_rate_ms = sqrt_controller(remaining_to_ceiling_m,
-                                                   pos_control->get_pos_U_p().kP(),
-                                                   pos_control->get_max_accel_U_mss(),
-                                                   G_Dt);
+        if (z_error_m > 0.0f) {
+            // target_climb_rate_ms = sqrt_controller(remaining_to_ceiling_m,
+            //                                        pos_control->get_pos_U_p().kP(),
+            //                                        pos_control->get_max_accel_U_mss(),
+            //                                        G_Dt);
+            target_climb_rate_ms = z_rate_pid.get_pid(z_error_m);
+            target_climb_rate_ms = MAX(target_climb_rate_ms, 0.0f);
+            target_climb_rate_ms = constrain_float(target_climb_rate_ms,
+                                        -get_pilot_speed_dn_ms(),
+                                        get_pilot_speed_up_ms());
+        } else if (z_error_m < 0.0f) {
+            target_down_rate_ms = z_rate_pid.get_pid(z_error_m);
+            target_down_rate_ms = MIN(target_down_rate_ms, 0.0f);
+            target_climb_rate_ms = constrain_float(target_down_rate_ms,
+                                        -get_pilot_speed_dn_ms(),
+                                        get_pilot_speed_up_ms());
+        } else {
+            z_rate_pid.reset_I();
         }
     } else {
         // pilot desired climb rate (m/s)
         target_climb_rate_ms = get_pilot_desired_climb_rate_ms();
     }
 
-    target_climb_rate_ms = constrain_float(target_climb_rate_ms,
-                                           -get_pilot_speed_dn_ms(),
-                                            get_pilot_speed_up_ms());
+
 
     // determine state using shared altitude-hold logic
     HandingModeState handing_state = get_handing_state_U_ms(target_climb_rate_ms);
@@ -224,20 +269,17 @@ void ModeHanding::run()
         const float current_alt_m = copter.current_loc.alt * 0.01f;
         const float target_alt_m = pos_control->get_pos_target_U_m();
         const float limited_current_target_m = MAX(current_alt_m, target_alt_m);
-        const float remaining_to_max_m = HANDING_ALT_MAX_M - limited_current_target_m;
+        const float remaining_to_max_m = z_target_m - limited_current_target_m;
 
         if (remaining_to_max_m <= 0.0f) {
             target_climb_rate_ms = 0.0f;
+            z_rate_pid.reset_I();
         } else {
-            const float slowdown_rate_ms = sqrt_controller(remaining_to_max_m,
-                                                           pos_control->get_pos_U_p().kP(),
-                                                           pos_control->get_max_accel_U_mss(),
-                                                           G_Dt);
+            const float slowdown_rate_ms = MAX(z_rate_pid.get_pid(remaining_to_max_m), 0.0f);
             target_climb_rate_ms = MIN(target_climb_rate_ms, slowdown_rate_ms);
         }
     }
 
-    // roll/pitch targets будем брать из NE-контроллера, по умолчанию 0
     float roll_target_rad  = 0.0f;
     float pitch_target_rad = 0.0f;
 
@@ -279,9 +321,6 @@ void ModeHanding::run()
 
         target_climb_rate_ms = get_avoidance_adjusted_climbrate_ms(target_climb_rate_ms);
 
-#if AP_RANGEFINDER_ENABLED
-        copter.surface_tracking.update_surface_offset();
-#endif
         pos_control->set_pos_target_U_from_climb_rate_m(target_climb_rate_ms);
 
         // по X/Y — держим текущую цель, считаем компенсацию наклона
